@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -19,8 +20,10 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"github.com/spf13/viper"
+	thaiaddress "github.com/ultramcu/go-thaiaddress"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 type user struct {
@@ -85,6 +88,48 @@ type flag struct {
 
 func (flag) TableName() string { return "common.feature_flags" }
 
+type thaiProvince struct {
+	Code       int    `json:"code" gorm:"primaryKey"`
+	NameTH     string `json:"nameTh" gorm:"column:name_th"`
+	NameEN     string `json:"nameEn" gorm:"column:name_en"`
+	RegionCode int    `json:"regionCode" gorm:"column:region_code"`
+}
+
+func (thaiProvince) TableName() string { return "common.thai_provinces" }
+
+type thaiDistrict struct {
+	Code         int    `json:"code" gorm:"primaryKey"`
+	ProvinceCode int    `json:"provinceCode" gorm:"column:province_code"`
+	NameTH       string `json:"nameTh" gorm:"column:name_th"`
+	NameEN       string `json:"nameEn" gorm:"column:name_en"`
+}
+
+func (thaiDistrict) TableName() string { return "common.thai_districts" }
+
+type thaiSubdistrict struct {
+	Code         int    `json:"code" gorm:"primaryKey"`
+	DistrictCode int    `json:"districtCode" gorm:"column:district_code"`
+	ProvinceCode int    `json:"provinceCode" gorm:"column:province_code"`
+	NameTH       string `json:"nameTh" gorm:"column:name_th"`
+	NameEN       string `json:"nameEn" gorm:"column:name_en"`
+	PostalCode   string `json:"postalCode" gorm:"column:postal_code"`
+}
+
+func (thaiSubdistrict) TableName() string { return "common.thai_subdistricts" }
+
+type thaiLocation struct {
+	ProvinceCode      int    `json:"provinceCode"`
+	ProvinceNameTH    string `json:"provinceNameTh"`
+	ProvinceNameEN    string `json:"provinceNameEn"`
+	DistrictCode      int    `json:"districtCode"`
+	DistrictNameTH    string `json:"districtNameTh"`
+	DistrictNameEN    string `json:"districtNameEn"`
+	SubdistrictCode   int    `json:"subdistrictCode"`
+	SubdistrictNameTH string `json:"subdistrictNameTh"`
+	SubdistrictNameEN string `json:"subdistrictNameEn"`
+	PostalCode        string `json:"postalCode"`
+}
+
 type typeInput struct {
 	Code        string  `json:"code" validate:"required,uppercase,alphanum"`
 	Name        string  `json:"name" validate:"required,max=150"`
@@ -147,10 +192,29 @@ func run() error {
 	return app.Shutdown(ctx)
 }
 func migrate(db *gorm.DB) error {
-	for _, sql := range []string{`CREATE SCHEMA IF NOT EXISTS common`, `CREATE TABLE IF NOT EXISTS common.master_data_types(id UUID PRIMARY KEY,code VARCHAR(100) UNIQUE NOT NULL,name VARCHAR(150) NOT NULL,description TEXT,is_active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`, `CREATE TABLE IF NOT EXISTS common.master_data_items(id UUID PRIMARY KEY,type_id UUID NOT NULL REFERENCES common.master_data_types(id),code VARCHAR(100) NOT NULL,name VARCHAR(255) NOT NULL,value JSONB NOT NULL DEFAULT '{}',sort_order INT NOT NULL DEFAULT 0,is_active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),deleted_at TIMESTAMPTZ)`, `CREATE UNIQUE INDEX IF NOT EXISTS common_master_item_unique ON common.master_data_items(type_id,code) WHERE deleted_at IS NULL`, `CREATE TABLE IF NOT EXISTS common.system_configs(key VARCHAR(150) PRIMARY KEY,value JSONB NOT NULL,description TEXT,updated_by UUID,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`, `CREATE TABLE IF NOT EXISTS common.feature_flags(key VARCHAR(150) PRIMARY KEY,enabled BOOLEAN NOT NULL DEFAULT FALSE,description TEXT,updated_by UUID,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`, `CREATE TABLE IF NOT EXISTS common.document_sequences(document_type VARCHAR(10) PRIMARY KEY,current_value BIGINT NOT NULL DEFAULT 0,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`} {
+	for _, sql := range []string{
+		`CREATE SCHEMA IF NOT EXISTS common`,
+		`CREATE TABLE IF NOT EXISTS common.master_data_types(id UUID PRIMARY KEY,code VARCHAR(100) UNIQUE NOT NULL,name VARCHAR(150) NOT NULL,description TEXT,is_active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE IF NOT EXISTS common.master_data_items(id UUID PRIMARY KEY,type_id UUID NOT NULL REFERENCES common.master_data_types(id),code VARCHAR(100) NOT NULL,name VARCHAR(255) NOT NULL,value JSONB NOT NULL DEFAULT '{}',sort_order INT NOT NULL DEFAULT 0,is_active BOOLEAN NOT NULL DEFAULT TRUE,created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),deleted_at TIMESTAMPTZ)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS common_master_item_unique ON common.master_data_items(type_id,code) WHERE deleted_at IS NULL`,
+		`CREATE TABLE IF NOT EXISTS common.system_configs(key VARCHAR(150) PRIMARY KEY,value JSONB NOT NULL,description TEXT,updated_by UUID,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE IF NOT EXISTS common.feature_flags(key VARCHAR(150) PRIMARY KEY,enabled BOOLEAN NOT NULL DEFAULT FALSE,description TEXT,updated_by UUID,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE IF NOT EXISTS common.document_sequences(document_type VARCHAR(10) PRIMARY KEY,current_value BIGINT NOT NULL DEFAULT 0,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE IF NOT EXISTS common.data_versions(dataset VARCHAR(100) PRIMARY KEY,version VARCHAR(100) NOT NULL,updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+		`CREATE TABLE IF NOT EXISTS common.thai_provinces(code INT PRIMARY KEY,name_th VARCHAR(150) NOT NULL,name_en VARCHAR(150) NOT NULL,region_code INT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS common.thai_districts(code INT PRIMARY KEY,province_code INT NOT NULL REFERENCES common.thai_provinces(code),name_th VARCHAR(150) NOT NULL,name_en VARCHAR(150) NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS common_thai_districts_province_idx ON common.thai_districts(province_code,code)`,
+		`CREATE TABLE IF NOT EXISTS common.thai_subdistricts(code INT PRIMARY KEY,district_code INT NOT NULL REFERENCES common.thai_districts(code),province_code INT NOT NULL REFERENCES common.thai_provinces(code),name_th VARCHAR(150) NOT NULL,name_en VARCHAR(150) NOT NULL,postal_code CHAR(5) NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS common_thai_subdistricts_district_idx ON common.thai_subdistricts(district_code,code)`,
+		`CREATE INDEX IF NOT EXISTS common_thai_subdistricts_province_idx ON common.thai_subdistricts(province_code,code)`,
+		`CREATE INDEX IF NOT EXISTS common_thai_subdistricts_postal_idx ON common.thai_subdistricts(postal_code)`,
+	} {
 		if err := db.Exec(sql).Error; err != nil {
 			return err
 		}
+	}
+	if err := seedThaiLocations(db); err != nil {
+		return err
 	}
 	queries := map[string]string{"CUS": `SELECT COALESCE(MAX((regexp_match(customer_no,'([0-9]+)$'))[1]::bigint),0) FROM customer.customers`, "PRD": `SELECT COALESCE(MAX((regexp_match(product_no,'([0-9]+)$'))[1]::bigint),0) FROM catalog.products`, "ORD": `SELECT COALESCE(MAX((regexp_match(order_number,'([0-9]+)$'))[1]::bigint),0) FROM ordering.orders`, "PAY": `SELECT COALESCE(MAX((regexp_match(payment_number,'([0-9]+)$'))[1]::bigint),0) FROM ordering.payments`, "INV": `SELECT COALESCE(MAX((regexp_match(invoice_number,'([0-9]+)$'))[1]::bigint),0) FROM ordering.invoices`, "REF": `SELECT COALESCE(MAX((regexp_match(refund_number,'([0-9]+)$'))[1]::bigint),0) FROM ordering.refunds`}
 	for kind, q := range queries {
@@ -163,6 +227,61 @@ func migrate(db *gorm.DB) error {
 		}
 	}
 	return nil
+}
+
+func seedThaiLocations(db *gorm.DB) error {
+	const dataset = "thai-address"
+	const version = "go-thaiaddress-v0.2.0"
+	var current string
+	db.Raw(`SELECT version FROM common.data_versions WHERE dataset=?`, dataset).Scan(&current)
+	if current == version {
+		return nil
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		provinces := make([]thaiProvince, 0, 77)
+		for _, item := range thaiaddress.Provinces() {
+			provinces = append(provinces, thaiProvince{
+				Code: item.Code, NameTH: item.NameTH, NameEN: item.NameEN, RegionCode: int(item.Region),
+			})
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "code"}},
+			DoUpdates: clause.AssignmentColumns([]string{"name_th", "name_en", "region_code"}),
+		}).CreateInBatches(provinces, 200).Error; err != nil {
+			return err
+		}
+		districts := make([]thaiDistrict, 0, 928)
+		for _, item := range thaiaddress.Districts() {
+			districts = append(districts, thaiDistrict{
+				Code: item.Code, ProvinceCode: item.ProvinceCode, NameTH: item.NameTH, NameEN: item.NameEN,
+			})
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "code"}},
+			DoUpdates: clause.AssignmentColumns([]string{"province_code", "name_th", "name_en"}),
+		}).CreateInBatches(districts, 500).Error; err != nil {
+			return err
+		}
+		subdistricts := make([]thaiSubdistrict, 0, 7452)
+		for _, item := range thaiaddress.Subdistricts() {
+			subdistricts = append(subdistricts, thaiSubdistrict{
+				Code: item.Code, DistrictCode: item.DistrictCode, ProvinceCode: item.DistrictCode / 100,
+				NameTH: item.NameTH, NameEN: item.NameEN, PostalCode: fmt.Sprintf("%05d", item.Postcode),
+			})
+		}
+		if err := tx.Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "code"}},
+			DoUpdates: clause.AssignmentColumns(
+				[]string{"district_code", "province_code", "name_th", "name_en", "postal_code"},
+			),
+		}).CreateInBatches(subdistricts, 500).Error; err != nil {
+			return err
+		}
+		return tx.Exec(
+			`INSERT INTO common.data_versions(dataset,version,updated_at) VALUES (?,?,NOW()) ON CONFLICT(dataset) DO UPDATE SET version=EXCLUDED.version,updated_at=NOW()`,
+			dataset, version,
+		).Error
+	})
 }
 func server(db *gorm.DB, auth string) *echo.Echo {
 	e := echo.New()
@@ -205,6 +324,10 @@ func server(db *gorm.DB, auth string) *echo.Echo {
 		return c.JSON(200, out)
 	}, require("common.read"))
 	api.PATCH("/feature-flags/:key", updateFlag(db), require("common.write"))
+	api.GET("/locations/provinces", listThaiProvinces(db), require("common.read"))
+	api.GET("/locations/districts", listThaiDistricts(db), require("common.read"))
+	api.GET("/locations/subdistricts", listThaiSubdistricts(db), require("common.read"))
+	api.GET("/locations/search", searchThaiLocations(db), require("common.read"))
 	api.POST("/document-numbers/next", nextNumber(db), requireService("document-numbers.issue"))
 	return e
 }
@@ -400,6 +523,115 @@ func updateFlag(db *gorm.DB) echo.HandlerFunc {
 		return c.JSON(200, out)
 	}
 }
+
+func listThaiProvinces(db *gorm.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		var out []thaiProvince
+		query := db.Order("name_th")
+		if q := strings.TrimSpace(c.QueryParam("q")); q != "" {
+			like := "%" + q + "%"
+			query = query.Where("name_th ILIKE ? OR name_en ILIKE ?", like, like)
+		}
+		if err := query.Find(&out).Error; err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, out)
+	}
+}
+
+func listThaiDistricts(db *gorm.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		provinceCode, err := requiredPositiveInt(c.QueryParam("provinceCode"), "provinceCode")
+		if err != nil {
+			return err
+		}
+		var out []thaiDistrict
+		query := db.Where("province_code=?", provinceCode).Order("name_th")
+		if q := strings.TrimSpace(c.QueryParam("q")); q != "" {
+			like := "%" + q + "%"
+			query = query.Where("name_th ILIKE ? OR name_en ILIKE ?", like, like)
+		}
+		if err := query.Find(&out).Error; err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, out)
+	}
+}
+
+func listThaiSubdistricts(db *gorm.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		districtCode, err := requiredPositiveInt(c.QueryParam("districtCode"), "districtCode")
+		if err != nil {
+			return err
+		}
+		var out []thaiSubdistrict
+		query := db.Where("district_code=?", districtCode).Order("name_th")
+		if q := strings.TrimSpace(c.QueryParam("q")); q != "" {
+			like := "%" + q + "%"
+			query = query.Where("name_th ILIKE ? OR name_en ILIKE ?", like, like)
+		}
+		if postalCode := strings.TrimSpace(c.QueryParam("postalCode")); postalCode != "" {
+			query = query.Where("postal_code=?", postalCode)
+		}
+		if err := query.Find(&out).Error; err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, out)
+	}
+}
+
+func searchThaiLocations(db *gorm.DB) echo.HandlerFunc {
+	return func(c echo.Context) error {
+		q := strings.TrimSpace(c.QueryParam("q"))
+		postalCode := strings.TrimSpace(c.QueryParam("postalCode"))
+		if q == "" && postalCode == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "q or postalCode is required")
+		}
+		limit := queryLimit(c.QueryParam("limit"), 20, 100)
+		query := db.Table("common.thai_subdistricts s").
+			Select(`p.code province_code,p.name_th province_name_th,p.name_en province_name_en,
+				d.code district_code,d.name_th district_name_th,d.name_en district_name_en,
+				s.code subdistrict_code,s.name_th subdistrict_name_th,s.name_en subdistrict_name_en,
+				s.postal_code postal_code`).
+			Joins("JOIN common.thai_districts d ON d.code=s.district_code").
+			Joins("JOIN common.thai_provinces p ON p.code=s.province_code")
+		if q != "" {
+			like := "%" + q + "%"
+			query = query.Where(
+				`s.name_th ILIKE ? OR s.name_en ILIKE ? OR d.name_th ILIKE ? OR d.name_en ILIKE ? OR p.name_th ILIKE ? OR p.name_en ILIKE ?`,
+				like, like, like, like, like, like,
+			)
+		}
+		if postalCode != "" {
+			query = query.Where("s.postal_code=?", postalCode)
+		}
+		var out []thaiLocation
+		if err := query.Order("p.name_th,d.name_th,s.name_th").Limit(limit).Scan(&out).Error; err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, out)
+	}
+}
+
+func requiredPositiveInt(value string, field string) (int, error) {
+	number, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || number <= 0 {
+		return 0, echo.NewHTTPError(http.StatusBadRequest, field+" is required")
+	}
+	return number, nil
+}
+
+func queryLimit(value string, fallback int, maximum int) int {
+	number, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || number <= 0 {
+		return fallback
+	}
+	if number > maximum {
+		return maximum
+	}
+	return number
+}
+
 func nextNumber(db *gorm.DB) echo.HandlerFunc {
 	loc, _ := time.LoadLocation("Asia/Bangkok")
 	return func(c echo.Context) error {
